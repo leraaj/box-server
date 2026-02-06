@@ -10,6 +10,8 @@ dotenv.config();
 
 const app = express();
 
+const fileId = "11N2sAIHhjHQQ3Tkc2_El7ML61qeSvAQ-";
+
 const allowedOrigins = [
   "http://localhost:5173",
   "https://box-1-0nll.onrender.com",
@@ -42,8 +44,6 @@ app.get("/api/drive-test", async (req, res) => {
 
     const drive = google.drive({ version: "v3", auth });
 
-    const fileId = "16Ph_0-dNggfqYLKC7GXNOK74zKKufALT";
-
     const meta = await drive.files.get({
       fileId,
       fields: "id,name,mimeType,size",
@@ -65,8 +65,6 @@ app.get("/api/messages", async (req, res) => {
     });
 
     const drive = google.drive({ version: "v3", auth });
-
-    const fileId = "16Ph_0-dNggfqYLKC7GXNOK74zKKufALT";
 
     const response = await drive.files.get(
       { fileId, alt: "media" },
