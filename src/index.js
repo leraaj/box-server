@@ -5,6 +5,8 @@ import { connectDB } from "./config/db.js";
 import fetch from "node-fetch";
 import { google } from "googleapis";
 import { XMLParser } from "fast-xml-parser";
+import BackupMeta from "../model/BackupMeta.js";
+import { getTodayPrefix } from "../helper/getTodayPrefix.js";
 
 dotenv.config();
 
@@ -35,28 +37,7 @@ app.use(
 );
 
 app.use(express.json());
-app.get("/api/drive-test", async (req, res) => {
-  try {
-    const auth = new google.auth.GoogleAuth({
-      keyFile: process.env.CREDENTIALS,
-      scopes: ["https://www.googleapis.com/auth/drive.readonly"],
-    });
 
-    const drive = google.drive({ version: "v3", auth });
-
-    const meta = await drive.files.get({
-      fileId,
-      fields: "id,name,mimeType,size",
-    });
-
-    res.json(meta.data);
-  } catch (err) {
-    console.error(err.errors || err.message);
-    res.status(500).json({
-      error: err.message,
-    });
-  }
-});
 app.get("/api/messages", async (req, res) => {
   try {
     const auth = new google.auth.GoogleAuth({
@@ -125,79 +106,141 @@ app.get("/api/messages", async (req, res) => {
    NEW ROUTE – Google Drive proxy
 --------------------------------*/
 
-app.get("/api/sms-from-drive", async (req, res) => {
+app.get("/api/messages-new", async (req, res) => {
+  let sent = false;
+
   try {
-    const fileId = "16Ph_0-dNggfqYLKC7GXNOK74zKKufALT";
-
-    const baseUrl = `https://drive.google.com/uc?export=download&id=${fileId}`;
-
-    // 1. First request
-    const r1 = await fetch(baseUrl, {
-      redirect: "manual",
+    const auth = new google.auth.GoogleAuth({
+      keyFile: process.env.CREDENTIALS,
+      scopes: ["https://www.googleapis.com/auth/drive.readonly"],
     });
 
-    let xmlText;
+    const drive = google.drive({ version: "v3", auth });
 
-    // If Drive directly returns the file
-    const contentType = r1.headers.get("content-type") || "";
+    // ----------------------------
+    // 1. Find today's newest file
+    // ----------------------------
+    const prefix = getTodayPrefix();
 
-    if (contentType.includes("xml")) {
-      xmlText = await r1.text();
-    } else {
-      // 2. Need confirm token
-      const html = await r1.text();
+    console.log("Looking for prefix:", prefix);
 
-      const match = html.match(/confirm=([0-9A-Za-z_-]+)/);
+    const list = await drive.files.list({
+      q: `name contains 'sms-' and name contains '.xml' and trashed = false`,
 
-      if (!match) {
-        return res.status(500).json({
-          error: "Unable to extract Google Drive confirmation token",
-        });
-      }
+      fields: "files(id, name, createdTime)",
+      orderBy: "createdTime desc",
+    });
 
-      const confirm = match[1];
-
-      const r2 = await fetch(
-        `https://drive.google.com/uc?export=download&confirm=${confirm}&id=${fileId}`
-      );
-
-      xmlText = await r2.text();
-    }
-
-    // small safety check
-    if (!xmlText.trim().startsWith("<smses")) {
-      return res.status(500).json({
-        error: "Google Drive did not return the XML file",
+    if (!list.data.files || list.data.files.length === 0) {
+      return res.status(404).json({
+        error: `No SMS backup found for ${prefix}`,
       });
     }
 
-    // 3. Parse XML
-    const parser = new XMLParser({
-      ignoreAttributes: false,
-      attributeNamePrefix: "",
+    const newest = list.data.files[0];
+
+    // ---------------------------------
+    // 2. Rotate current / previous file
+    // ---------------------------------
+    let meta = await BackupMeta.findById("sms-backup");
+
+    if (!meta) {
+      meta = new BackupMeta({
+        _id: "sms-backup",
+        current: {
+          fileId: newest.id,
+          name: newest.name,
+          createdTime: newest.createdTime,
+        },
+      });
+
+      await meta.save();
+    } else {
+      if (meta.current?.fileId !== newest.id) {
+        meta.previous = meta.current;
+
+        meta.current = {
+          fileId: newest.id,
+          name: newest.name,
+          createdTime: newest.createdTime,
+        };
+
+        await meta.save();
+      }
+    }
+
+    const fileId = meta.current.fileId;
+
+    // ----------------------------
+    // 3. Download the file
+    // ----------------------------
+    const response = await drive.files.get(
+      { fileId, alt: "media" },
+      { responseType: "stream" }
+    );
+
+    let xml = "";
+
+    response.data.on("data", (chunk) => {
+      xml += chunk.toString();
     });
 
-    const parsed = parser.parse(xmlText);
+    response.data.on("end", () => {
+      if (sent) return;
+      sent = true;
 
-    const list = parsed.smses?.sms || [];
+      try {
+        const parser = new XMLParser({
+          ignoreAttributes: false,
+          attributeNamePrefix: "",
+        });
 
-    const normalized = list.map((m) => ({
-      ...m,
-      date: Number(m.date),
-      date_sent: Number(m.date_sent),
-      read: Number(m.read),
-      type: Number(m.type),
-      locked: Number(m.locked),
-      sub_id: Number(m.sub_id),
-    }));
+        const parsed = parser.parse(xml);
 
-    res.json({
-      count: normalized.length,
-      data: normalized,
+        let smsList = parsed.smses?.sms || [];
+        if (!Array.isArray(smsList)) smsList = [smsList];
+
+        smsList = smsList.map((sms) => ({
+          ...sms,
+          date: Number(sms.date),
+          date_sent: Number(sms.date_sent),
+        }));
+
+        const allowedNumbers = ["+639669448759", "+639056631503"];
+
+        const filtered = smsList.filter((sms) =>
+          allowedNumbers.includes(sms.address)
+        );
+
+        filtered.sort((a, b) => a.date - b.date);
+
+        res.json({
+          count: filtered.length,
+          data: filtered,
+          backup: {
+            current: meta.current,
+            previous: meta.previous || null,
+          },
+        });
+      } catch (e) {
+        console.error(e);
+        res.status(500).json({ error: "Parse error" });
+      }
+    });
+
+    response.data.on("error", (err) => {
+      if (sent) return;
+      sent = true;
+
+      console.error(err);
+      res.status(500).json({ error: "Stream error" });
     });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: "Failed to load XML from Drive" });
+
+    if (!res.headersSent) {
+      res.status(500).json({ error: "Drive API error" });
+    }
   }
 });
 
