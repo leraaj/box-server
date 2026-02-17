@@ -1,4 +1,7 @@
 import mongoose from "mongoose";
+import dotenv from "dotenv";
+
+dotenv.config({ quiet: true });
 
 export async function connectDB() {
   try {

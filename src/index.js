@@ -8,12 +8,13 @@ import { XMLParser } from "fast-xml-parser";
 import BackupMeta from "../model/BackupMeta.js";
 import { getTodayPrefix } from "../helper/getTodayPrefix.js";
 
-dotenv.config();
+dotenv.config({ quiet: true });
 
 const app = express();
 
 const fileId = "11N2sAIHhjHQQ3Tkc2_El7ML61qeSvAQ-";
 
+const allowedNumbers = ["+639669448759", "+639056631503"];
 const allowedOrigins = [
   "http://localhost:5173",
   "https://box-1-0nll.onrender.com",
@@ -241,6 +242,23 @@ app.get("/api/messages-new", async (req, res) => {
     if (!res.headersSent) {
       res.status(500).json({ error: "Drive API error" });
     }
+  }
+});
+
+app.post("/api/login", async (req, res) => {
+  try {
+    const { code } = req.body;
+
+    if (code === "082299") {
+      return res.status(200).json({ user: "nicole" });
+    } else if (code === "061599") {
+      return res.status(200).json({ user: "aj" });
+    } else {
+      return res.status(200).json({ user: null });
+    }
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ error: "Server error" });
   }
 });
 
