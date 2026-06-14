@@ -249,7 +249,7 @@ app.post("/api/login", async (req, res) => {
   try {
     const { code } = req.body;
 
-    if (code === "082299") {
+    if (code === "102299") {
       return res.status(200).json({ user: "nicole" });
     } else if (code === "061599") {
       return res.status(200).json({ user: "aj" });
